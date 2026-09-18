@@ -17,3 +17,7 @@ dist/
 build/
 *.egg-info/
 .ruff_cache/
+
+# Internal working notes for Claude Code sessions — not meant for the public repo
+CLAUDE.md
+HANDOFF.md
