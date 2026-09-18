@@ -1,0 +1,19 @@
+# Acquisition and derived image data — never track (the store is 221 GB)
+*.ome.zarr/
+*.zarr/
+
+# Derived intermediates
+*.npy
+*.npz
+segmentation_qc/
+
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+.ruff_cache/
