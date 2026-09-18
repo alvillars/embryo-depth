@@ -8,6 +8,21 @@ The purpose is interactivity, and the hot axis is time: pick a depth, then scrub
 in 3D hunting for events. Depth changes are occasional; time changes are constant and need to feel
 instant — the shell viewer is benchmarked at 40+ fps while scrubbing time at its default level.
 
+<p align="center">
+  <img src="assets/depth_shells.png" alt="Distance transform (EDT) sliced through the embryo, and the resulting shells of tissue at increasing depth" width="100%">
+</p>
+
+The left column is the raw depth field (distance from the surface, in µm); each column after it is
+a thin shell pulled out at a fixed depth — this is the EDT computation the whole pipeline exists to
+get right (see `CLAUDE.md` for the traps involved).
+
+<p align="center">
+  <img src="assets/viewer.png" alt="The standalone napari shell viewer, showing a depth shell rendered as a volume with the depth/timepoint/half-width sliders" width="100%">
+</p>
+
+The shell viewer: a napari volume layer plus sliders for timepoint, depth, and half-width, rendered
+directly from the depth-bucketed index rather than recomputed per frame.
+
 ## Install
 
 ```bash
