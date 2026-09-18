@@ -14,7 +14,7 @@ instant — the shell viewer is benchmarked at 40+ fps while scrubbing time at i
 
 The left column is the raw depth field (distance from the surface, in µm); each column after it is
 a thin shell pulled out at a fixed depth — this is the EDT computation the whole pipeline exists to
-get right (see `CLAUDE.md` for the traps involved).
+get right.
 
 <p align="center">
   <img src="assets/viewer.png" alt="The standalone napari shell viewer, showing a depth shell rendered as a volume with the depth/timepoint/half-width sliders" width="100%">
@@ -53,9 +53,7 @@ Or use it as a napari plugin (`embryo-depth` is registered as an `napari.manifes
 open a store through napari's own File > Open, or launch the "Depth shells" dock widget.
 
 **Stop at the review gate.** A wrong segmentation produces a depth field that looks smooth and
-plausible while being wrong, and there's no later step where the mistake becomes obvious. See
-`CLAUDE.md` for the full pipeline architecture, the dataset's geometry, and the specific traps this
-codebase guards against.
+plausible while being wrong, and there's no later step where the mistake becomes obvious.
 
 ## Test
 
