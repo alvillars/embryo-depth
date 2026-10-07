@@ -271,13 +271,29 @@ def test_smooth_upsample_hits_the_exact_target_shape():
     for shape, scale in [
         ((150, 286, 287), (2.0, 2.08, 2.08)),
         ((150, 572, 575), (2.0, 1.04, 1.04)),
-        ((150, 1145, 1151), (2.0, 0.52, 0.52)),
-        ((300, 2291, 2303), (1.0, 0.26, 0.26)),
     ]:
         target = make_level("t", shape, scale)
         out = smooth_upsample_to(mask, source, target)
         assert out.shape == shape
         assert set(np.unique(out)) <= {0, 1}
+
+
+def test_smooth_upsample_hits_the_exact_shape_at_every_pyramid_step():
+    """The same size pattern as the real levels 3 -> 0 on a small volume: the odd 2n+1, 4n+3, 8n+7
+    sizes and the halved z step at level 0. The real level 0 is 300 x 2291 x 2303 voxels
+    (1.6e9); one float32 copy of that is 6 GB, more than a CI runner holds."""
+    source = make_level("4", (10, 23, 23), (2.0, 4.16, 4.16))
+    mask = np.zeros((10, 23, 23), np.uint8)
+    mask[3:7, 6:17, 6:17] = 1
+    for shape, scale in [
+        ((10, 46, 47), (2.0, 2.08, 2.08)),
+        ((10, 92, 95), (2.0, 1.04, 1.04)),
+        ((10, 184, 191), (2.0, 0.52, 0.52)),
+        ((20, 367, 383), (1.0, 0.26, 0.26)),
+    ]:
+        out = smooth_upsample_to(mask, source, make_level("t", shape, scale))
+        assert out.shape == shape
+        assert set(np.unique(out)) <= {0, 1} and out.any()
 
 
 def test_smooth_upsample_preserves_values_and_rough_volume_fraction():
