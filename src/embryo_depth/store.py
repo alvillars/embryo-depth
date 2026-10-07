@@ -166,8 +166,8 @@ class Dataset:
     def image(self, level: str) -> zarr.Array:
         return zarr.open(str(self.path / level), mode="r")
 
-    def label(self, level: str, mode: str = "r") -> zarr.Array:
-        return zarr.open(str(self.path / "labels" / LABEL_NAME / level), mode=mode)
+    def label(self, level: str, mode: str = "r", name: str = LABEL_NAME) -> zarr.Array:
+        return zarr.open(str(self.path / "labels" / name / level), mode=mode)
 
     def depth(self, level: str, mode: str = "r") -> zarr.Array:
         return zarr.open(str(self.path / "depth" / level), mode=mode)
@@ -177,8 +177,8 @@ class Dataset:
         make up ``depth_index/{level}`` -- see ``create_depth_index_group``."""
         return zarr.open(str(self.path / "depth_index" / level / name), mode=mode)
 
-    def has_labels(self) -> bool:
-        return (self.path / "labels" / LABEL_NAME / ".zattrs").exists()
+    def has_labels(self, name: str = LABEL_NAME) -> bool:
+        return (self.path / "labels" / name / ".zattrs").exists()
 
     def has_depth(self) -> bool:
         return (self.path / "depth" / ".zattrs").exists()
@@ -188,25 +188,31 @@ class Dataset:
 
     # -- creating the derived groups --------------------------------------------------
 
-    def create_label_group(self, levels: list[str], overwrite: bool = False) -> None:
-        """Create ``labels/embryo`` as an NGFF label multiscale covering ``levels``.
+    def create_label_group(
+        self, levels: list[str], name: str = LABEL_NAME, overwrite: bool = False
+    ) -> None:
+        """Create ``labels/{name}`` as an NGFF label multiscale covering ``levels``.
 
-        Additive: no existing key in the acquisition store is touched.
+        Additive: no existing key in the acquisition store is touched, and an existing
+        ``image-label`` block on this group is preserved.
         """
         root = zarr.open_group(str(self.path), mode="a")
         labels_group = root.require_group("labels")
 
         existing = list(labels_group.attrs.get("labels", []))
-        if LABEL_NAME not in existing:
-            labels_group.attrs["labels"] = existing + [LABEL_NAME]
+        if name not in existing:
+            labels_group.attrs["labels"] = existing + [name]
 
-        group = labels_group.require_group(LABEL_NAME)
+        group = labels_group.require_group(name)
         for level in levels:
             src = self.levels[level]
+            # a label is one class map, not one per imaging channel: singleton c
+            # whatever the number of image channels
+            shape = (src.shape[0], 1, *src.shape[2:])
             group.require_dataset(
                 level,
-                shape=src.shape,
-                chunks=suggest_chunks(src.shape, 1),
+                shape=shape,
+                chunks=suggest_chunks(shape, 1),
                 dtype="u1",
                 compressor=numcodecs.Zstd(level=5),
                 fill_value=0,
@@ -222,7 +228,7 @@ class Dataset:
         group.attrs["multiscales"] = [
             {
                 "version": "0.4",
-                "name": LABEL_NAME,
+                "name": name,
                 "axes": self.axes,
                 "datasets": [
                     {"path": lv, "coordinateTransformations": self.coordinate_transformations(lv)}
@@ -230,12 +236,16 @@ class Dataset:
                 ],
             }
         ]
-        group.attrs["image-label"] = {
-            "version": "0.4",
-            "colors": [{"label-value": 1, "rgba": [255, 128, 0, 128]}],
-            "properties": [{"label-value": 1, "name": "embryo"}],
-            "source": {"image": "../../"},
-        }
+        # Only a default: a group that already carries image-label metadata (a multi-class
+        # prediction with its own colours and property names) keeps it when the multiscales
+        # are rewritten, e.g. by an upscale run.
+        if "image-label" not in group.attrs:
+            group.attrs["image-label"] = {
+                "version": "0.4",
+                "colors": [{"label-value": 1, "rgba": [255, 128, 0, 128]}],
+                "properties": [{"label-value": 1, "name": name}],
+                "source": {"image": "../../"},
+            }
 
     def create_depth_group(
         self, levels: list[str] = list(DEPTH_LEVELS), overwrite: bool = False

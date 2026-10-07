@@ -8,6 +8,7 @@ from embryo_depth.store import DEPTH_SCALE_UM, Level, dequantize_depth, quantize
 from embryo_depth.upscale import (
     linear_axis_weights,
     nearest_indices,
+    smooth_upsample_labels_to,
     smooth_upsample_to,
     upsample_to,
 )
@@ -307,6 +308,71 @@ def test_smooth_upsample_reduces_surface_roughness_vs_nearest_neighbour():
     nn = upsample_to(mask, source, target)
     sm = smooth_upsample_to(mask, source, target)
     assert roughness(sm) < roughness(nn)
+
+
+def _two_class_shell():
+    """Epiblast shell (1) around a lumen (2): a radius-36 um body with a radius-16 um cavity.
+
+    The lumen must span several source voxels: below that the signed distance field has no
+    interior to interpolate and any resampler (binary or not) shrinks it.
+    """
+    vox = (2.0, 4.16, 4.16)
+    outer = sphere((36, 24, 24), 36.0, vox)
+    inner = sphere((36, 24, 24), 16.0, vox)
+    labels = np.zeros(outer.shape, np.uint8)
+    labels[outer] = 1
+    labels[inner] = 2
+    return labels
+
+
+def test_smooth_upsample_labels_preserves_classes_and_the_lumen():
+    source = make_level("4", (36, 24, 24), (2.0, 4.16, 4.16))
+    target = make_level("1", (36, 192, 192), (2.0, 0.52, 0.52))
+    labels = _two_class_shell()
+    out = smooth_upsample_labels_to(labels, source, target)
+    assert out.shape == target.shape[2:]
+    assert set(np.unique(out)) == {0, 1, 2}
+    # class volume fractions survive the resample (source voxel volume != target's)
+    for c in (1, 2):
+        assert (out == c).mean() == pytest.approx((labels == c).mean(), rel=0.05)
+    # the lumen stays enclosed by epiblast: no lumen voxel touches background
+    lumen_ring = ndi.binary_dilation(out == 2) & (out != 2)
+    assert not np.any(out[lumen_ring] == 0)
+    # and the lumen is what the binary path gives for it alone
+    binary = smooth_upsample_to((labels == 2).astype(np.uint8), source, target)
+    assert np.array_equal(out == 2, binary.astype(bool))
+
+
+def test_smooth_upsample_labels_reduces_to_binary_path_for_one_class():
+    source = make_level("4", (36, 24, 24), (2.0, 4.16, 4.16))
+    target = make_level("1", (36, 192, 192), (2.0, 0.52, 0.52))
+    mask = sphere((36, 24, 24), 9.0, (2.0, 4.16, 4.16)).astype(np.uint8)
+    assert np.array_equal(
+        smooth_upsample_labels_to(mask * 5, source, target),
+        smooth_upsample_to(mask, source, target) * 5,
+    )
+
+
+def test_smooth_upsample_labels_reduces_roughness_vs_nearest_neighbour():
+    source = make_level("4", (36, 24, 24), (2.0, 4.16, 4.16))
+    target = make_level("1", (36, 192, 192), (2.0, 0.52, 0.52))
+    labels = _two_class_shell()
+
+    def interface_voxels(m):
+        # voxels of class 2 with a 6-neighbour of class 1: a discretised interface area
+        near_1 = ndi.binary_dilation(m == 1)
+        return int(((m == 2) & near_1).sum())
+
+    nn = upsample_to(labels, source, target)
+    sm = smooth_upsample_labels_to(labels, source, target)
+    assert interface_voxels(sm) < interface_voxels(nn)
+
+
+def test_smooth_upsample_labels_handles_an_empty_volume():
+    source = make_level("4", (8, 8, 8), (2.0, 4.16, 4.16))
+    target = make_level("2", (8, 16, 16), (2.0, 2.08, 2.08))
+    out = smooth_upsample_labels_to(np.zeros((8, 8, 8), np.uint8), source, target)
+    assert out.shape == (8, 16, 16) and not out.any()
 
 
 # --- quantisation ------------------------------------------------------------------

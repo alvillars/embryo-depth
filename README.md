@@ -43,6 +43,22 @@ uv run python -m embryo_depth.upscale    # mask -> full label pyramid: labels/em
 uv run python -m embryo_depth.depth --workers 8   # distance transform: depth/1..4
 ```
 
+Optionally, split the embryo into **lumen** and **tissue** (the tissue shell is the embryo minus the
+lumen). The lumen is the dark, membrane-free cavity inside the embryo mask, so the reporter must label
+cell boundaries; `labels/embryo/4` has to exist first:
+
+```bash
+uv run python -m embryo_depth.lumen --dry-run 3                    # first 3 timepoints only, to check
+uv run python -m embryo_depth.lumen                                # labels/lumen/4 and labels/tissue/4
+uv run python -m embryo_depth.upscale --label lumen                # and --label tissue: pyramid levels
+```
+
+`upscale --label NAME` works on any label group, including multi-class ones (for example
+1 = epiblast, 2 = lumen): the smooth path builds one signed distance field per class and gives each voxel
+the class with the largest one, so the class values are kept. A label group is always written with a
+single channel, whatever the number of image channels (a label is one class map), and existing
+`image-label` metadata (class names and colours) is kept when the pyramid is rebuilt.
+
 Then browse:
 
 ```bash

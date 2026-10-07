@@ -25,6 +25,14 @@ Two resampling methods share that same coordinate mapping:
   the surface, and it varies smoothly and roughly linearly nearby, so linearly resampling
   it and re-thresholding removes the staircase without moving the surface or inventing
   information beyond the source mask's own ~4 um accuracy. Default for levels 1-3.
+
+Both accept multi-class label volumes (e.g. 1 = epiblast, 2 = lumen). Nearest-neighbour
+handles that for free. The smooth path builds one signed distance field per class,
+resamples each, and gives every target voxel the class whose field is largest (background
+where none is positive). At an interface between two classes their fields are close to
+negatives of each other, so the argmax boundary sits on the interface -- the same
+zero-crossing argument as the binary case. A one-class volume reduces exactly to the
+binary path.
 """
 
 from __future__ import annotations
@@ -111,8 +119,8 @@ def _blend_axis(
     return lo_vals
 
 
-def _smooth_resample(sdf: np.ndarray, source: Level, target: Level) -> np.ndarray:
-    """Separably interpolate a signed-distance field onto ``target``'s grid and re-threshold.
+def _resample_field(field: np.ndarray, source: Level, target: Level) -> np.ndarray:
+    """Separably interpolate a scalar field (e.g. a signed-distance field) onto ``target``'s grid.
 
     Three 1-D passes (z, then y, then x) rather than one N-D ``map_coordinates`` call:
     building an explicit ``(3, *target_shape)`` coordinate array would be ~19 GB in float32
@@ -121,11 +129,54 @@ def _smooth_resample(sdf: np.ndarray, source: Level, target: Level) -> np.ndarra
     this pyramid (identity for levels 1-4, 2x for level 4->0), keeping the smaller
     intermediate array around longest and deferring the expensive xy blow-up to the end.
     """
-    out = sdf
+    out = field
     for axis in (0, 1, 2):
         lo, hi, weight_hi = linear_axis_weights(source, target, axis)
         out = _blend_axis(out, lo, hi, weight_hi, axis)
-    return (out > 0).astype(np.uint8)
+    return out
+
+
+def _smooth_resample(sdf: np.ndarray, source: Level, target: Level) -> np.ndarray:
+    """Interpolate a signed-distance field onto ``target``'s grid and re-threshold at zero."""
+    return (_resample_field(sdf, source, target) > 0).astype(np.uint8)
+
+
+def class_signed_distances(
+    labels: np.ndarray, voxel_um: tuple[float, float, float]
+) -> dict[int, np.ndarray]:
+    """One signed distance field per non-zero class present in ``labels``.
+
+    Absent classes are skipped: the distance transform of an empty mask is undefined.
+    """
+    return {
+        int(c): signed_distance(labels == c, voxel_um)
+        for c in np.unique(labels)
+        if c != 0
+    }
+
+
+def _smooth_resample_labels(
+    sdfs: dict[int, np.ndarray], source: Level, target: Level
+) -> np.ndarray:
+    """Resample per-class signed-distance fields and label each voxel by the largest one.
+
+    Classes are folded in one at a time, so only the running best field and the label
+    output are alive besides the class being resampled. Voxels where no class field is
+    positive stay background; exact ties go to the class visited first (lowest value).
+    """
+    if not sdfs:
+        return np.zeros(target.shape[2:], np.uint8)
+    if len(sdfs) == 1:
+        ((cls, sdf),) = sdfs.items()
+        return _smooth_resample(sdf, source, target) * np.uint8(cls)
+    out = np.zeros(target.shape[2:], np.uint8)
+    best = np.zeros(target.shape[2:], np.float32)  # 0 = the surface, so start there
+    for cls in sorted(sdfs):
+        field = _resample_field(sdfs[cls], source, target)
+        win = field > best
+        out[win] = cls
+        best[win] = field[win]
+    return out
 
 
 def smooth_upsample_to(mask: np.ndarray, source: Level, target: Level) -> np.ndarray:
@@ -136,24 +187,42 @@ def smooth_upsample_to(mask: np.ndarray, source: Level, target: Level) -> np.nda
     the continuous, implicit surface the mask represents, removing the staircase artifact
     without inventing new surface information -- the source mask's own accuracy (~4 um for a
     level-4 mask, per the module docstring) is unchanged, only how it is resampled.
+
+    ``mask`` is treated as binary. For multi-class labels use ``smooth_upsample_labels_to``.
     """
     sdf = signed_distance(mask.astype(bool), source.voxel_size_um)
     return _smooth_resample(sdf, source, target)
 
 
+def smooth_upsample_labels_to(labels: np.ndarray, source: Level, target: Level) -> np.ndarray:
+    """Multi-class ``smooth_upsample_to``: one signed distance field per class, argmax wins.
+
+    Preserves the label values (unlike ``smooth_upsample_to``, which merges every non-zero
+    class into 1). For a volume with a single class ``c`` it returns exactly
+    ``smooth_upsample_to(labels, ...) * c``.
+    """
+    sdfs = class_signed_distances(labels, source.voxel_size_um)
+    return _smooth_resample_labels(sdfs, source, target)
+
+
+def _class_counts(labels: np.ndarray) -> dict[int, int]:
+    values, counts = np.unique(labels, return_counts=True)
+    return {int(v): int(n) for v, n in zip(values, counts) if v != 0}
+
+
 def _worker(args) -> tuple[int, float]:
-    t, store_path, source_level, target_levels, smooth_levels = args
+    t, store_path, source_level, target_levels, smooth_levels, label_name = args
     ds = Dataset(store_path)
     src = ds.levels[source_level]
     started = time.time()
-    mask = np.asarray(ds.label(source_level)[t, 0])
-    sdf = signed_distance(mask.astype(bool), src.voxel_size_um) if smooth_levels else None
+    mask = np.asarray(ds.label(source_level, name=label_name)[t, 0])
+    sdfs = class_signed_distances(mask, src.voxel_size_um) if smooth_levels else None
     for level in target_levels:
         if level in smooth_levels:
-            out = _smooth_resample(sdf, src, ds.levels[level])
+            out = _smooth_resample_labels(sdfs, src, ds.levels[level])
         else:
             out = upsample_to(mask, src, ds.levels[level])
-        ds.label(level, mode="a")[t, 0] = out
+        ds.label(level, mode="a", name=label_name)[t, 0] = out
     return t, time.time() - started
 
 
@@ -163,11 +232,13 @@ def build_pyramid(
     target_levels: list[str] | None = None,
     workers: int = 4,
     smooth_levels: frozenset[str] | None = None,
+    label_name: str = "embryo",
 ) -> None:
-    """Build the label pyramid. ``smooth_levels`` selects which target levels use
-    ``smooth_upsample_to`` instead of ``upsample_to``; defaults to every target level except
-    "0" (level 0's cost is much higher and it is only ever touched to validate the upscale --
-    see module docstring). Pass an empty ``frozenset()`` to disable smoothing entirely.
+    """Build the label pyramid for ``labels/{label_name}``. ``smooth_levels`` selects which
+    target levels use ``smooth_upsample_to`` instead of ``upsample_to``; defaults to every
+    target level except "0" (level 0's cost is much higher and it is only ever touched to
+    validate the upscale -- see module docstring). Pass an empty ``frozenset()`` to disable
+    smoothing entirely.
     """
     ds = Dataset(store_path)
     if target_levels is None:
@@ -176,11 +247,16 @@ def build_pyramid(
     if smooth_levels is None:
         smooth_levels = frozenset(target_levels) - {"0"}
 
-    # (Re)create the group so the multiscales metadata lists every level that now exists.
-    ds.create_label_group(sorted(ds.levels, key=int))
+    # (Re)create the group so the multiscales metadata lists every level that now exists:
+    # the source plus the targets, not the whole image pyramid (a prediction that lives at
+    # level 3 must not advertise an empty level 4).
+    ds.create_label_group(sorted({source_level, *target_levels}, key=int), name=label_name)
 
     n_t = ds.n_timepoints
-    jobs = [(t, store_path, source_level, target_levels, smooth_levels) for t in range(n_t)]
+    jobs = [
+        (t, store_path, source_level, target_levels, smooth_levels, label_name)
+        for t in range(n_t)
+    ]
     started = time.time()
     # Fewer workers than cores: a level-0 timepoint is 1.6e9 voxels and the write is
     # I/O bound, so more processes mostly contend for memory bandwidth.
@@ -200,6 +276,9 @@ def main() -> None:
     p.add_argument("--store", type=Path, default=DEFAULT_STORE)
     p.add_argument("--source-level", default=SEGMENT_LEVEL)
     p.add_argument("--levels", nargs="+", default=None, help="target levels, e.g. 0 1 2 3")
+    p.add_argument(
+        "--label", default="embryo", help="label group to upscale, e.g. embryo/lumen/tissue"
+    )
     p.add_argument("--workers", type=int, default=4)
     p.add_argument(
         "--smooth-levels",
@@ -225,7 +304,7 @@ def main() -> None:
     smooth_levels = (
         None if args.smooth_levels is None else frozenset(args.smooth_levels)
     )
-    print(f"upscaling labels/embryo/{args.source_level} -> {sorted(targets, key=int)}")
+    print(f"upscaling labels/{args.label}/{args.source_level} -> {sorted(targets, key=int)}")
     for lv in sorted(targets, key=int):
         print(f"  level {lv}: {ds.levels[lv].shape}  voxel {ds.levels[lv].voxel_size_um} um")
 
@@ -239,18 +318,20 @@ def main() -> None:
         )
         src = ds.levels[args.source_level]
         for t in range(args.dry_run):
-            mask = np.asarray(ds.label(args.source_level)[t, 0])
+            mask = np.asarray(ds.label(args.source_level, name=args.label)[t, 0])
             for level in targets:
                 tgt = ds.levels[level]
                 nn = upsample_to(mask, src, tgt)
-                line = f"  t={t} level={level} nn_voxels={int(nn.sum())}"
+                line = f"  t={t} level={level} nn_voxels={_class_counts(nn)}"
                 if level in resolved_smooth:
-                    sm = smooth_upsample_to(mask, src, tgt)
-                    line += f" smooth_voxels={int(sm.sum())}"
+                    sm = smooth_upsample_labels_to(mask, src, tgt)
+                    line += f" smooth_voxels={_class_counts(sm)}"
                 print(line)
         return
 
-    build_pyramid(args.store, args.source_level, targets, args.workers, smooth_levels)
+    build_pyramid(
+        args.store, args.source_level, targets, args.workers, smooth_levels, args.label
+    )
     print("done")
 
 
