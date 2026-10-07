@@ -76,7 +76,3 @@ plausible while being wrong, and there's no later step where the mistake becomes
 ```bash
 uv run pytest
 ```
-
-## License
-
-MIT — see [LICENSE](LICENSE).

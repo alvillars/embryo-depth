@@ -3,8 +3,6 @@ name = "embryo-depth"
 version = "0.1.0"
 description = "Depth-resampled viewing of light-sheet embryo volumes stored as OME-Zarr"
 readme = "README.md"
-license = "MIT"
-authors = [{ name = "Alex Villars" }]
 requires-python = ">=3.10,<3.13"
 classifiers = [
     "Development Status :: 3 - Alpha",
